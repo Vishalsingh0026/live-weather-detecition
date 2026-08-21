@@ -1,0 +1,133 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: bharat-resilience-postgres
+    environment:
+      POSTGRES_USER: bharatresilience
+      POSTGRES_PASSWORD: resilience123
+      POSTGRES_DB: bharat_resilience
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bharatresilience -d bharat_resilience"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bharat-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: bharat-resilience-redis
+    command: redis-server --appendonly yes --requirepass resilience123
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bharat-network
+    restart: unless-stopped
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: bharat-resilience-backend
+    environment:
+      APP_ENV: production
+      DEBUG: "False"
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql://bharatresilience:resilience123@postgres:5432/bharat_resilience
+      REDIS_URL: redis://:resilience123@redis:6379
+      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key-change-in-production}
+      CORS_ORIGINS: '["http://localhost:3000", "http://localhost:5173", "http://localhost"]'
+      HOST: 0.0.0.0
+      PORT: 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+    networks:
+      - bharat-network
+    restart: unless-stopped
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 10 &&
+        echo 'Database ready. Starting application...' &&
+        uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  # React Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: bharat-resilience-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - bharat-network
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://backend:8000/api
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: bharat-resilience-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@bharatresilience.ai
+      PGADMIN_DEFAULT_PASSWORD: resilience123
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - bharat-network
+    restart: unless-stopped
+
+  # Optional: Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: bharat-resilience-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:resilience123
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - bharat-network
+    restart: unless-stopped
+
+networks:
+  bharat-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
